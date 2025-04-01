@@ -1,0 +1,628 @@
+openapi: 3.0.3
+info:
+  title: Draft ETSI GS QKD 020 - Interoperable Key Management System API
+  description: |
+    OpenAPI description of the Interoperable Key Management System API being
+    developed by ETSI ISG QKD under work item DGS/QKD-020_InteropKMS.
+
+    The interface is intended for use within a trusted node and enables the
+    transfer of keys between key management systems.
+  contact:
+    name: ETSI ISG QKD
+    email: isgsupport@etsi.org
+  version: 0.4.1
+  license:
+    name: BSD 3-Clause
+    url: https://forge.etsi.org/legal-matters
+servers:
+  - url: https://{kme_hostname}
+    description: Local KME server
+    variables:
+      kme_hostname:
+        default: 127.0.0.1:443
+externalDocs:
+  description: Work Item description
+  url: https://portal.etsi.org/webapp/WorkProgram/Report_WorkItem.asp?WKI_ID=63115
+paths:
+  /kmapi/versions:
+    get:
+      summary: Get supported API versions
+      operationId: get-versions
+      description: |
+        Return list of supported ETSI GS QKD 020 API versions.
+        
+        When an SAE makes a request to a KME, it should use the most recent
+        version of the API that the KME and SAE support.
+
+        The SAE can use this end-point to determine which API versions the KME
+        supports.
+      responses:
+        '200':
+          description: Supported versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/version_container'
+        '401':
+          $ref: '#/components/responses/401-extkey'
+        '503':
+          $ref: '#/components/responses/503-extkey'
+
+  /kmapi/v1/ext_keys:
+    post:
+      summary: Transfer keys to external KMS
+      operationId: post-ext_keys
+      description: |
+        Pass an extended key request container comprising key material and
+        associated data to another KME, for the key(s) to be delivered (by relay
+        where necessary) to the target SAE(s) specified. The extended key
+        request container contains keys matching those to be delivered to the
+        initiator SAE.
+
+        This method is 'non-blocking'. Upon a valid request, the KME will
+        respond with an HTTP code 202 ('Accepted'), then it will issue a
+        separate call (or multiple calls) to the specified `ack_callback_url`
+        endpoint once the keys are actually delivered (or fail to be delivered).
+
+        A Code 400 error will be returned if the container format is invalid or
+        includes initiator/target SAE IDs for which a valid route is not known
+        to the KME.
+      requestBody:
+        description: Extended key request container.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ext_key_container'
+      responses:
+        '202':
+          $ref: '#/components/responses/202-extkey'
+        '400':
+          $ref: '#/components/responses/400-extkey'
+        '401':
+          $ref: '#/components/responses/401-extkey'
+        '408':
+          $ref: '#/components/responses/408-extkey'
+        '503':
+          $ref: '#/components/responses/503-extkey'
+        '555':
+          $ref: '#/components/responses/503-extkey'
+
+  /kmapi/v1/ext_keys/void:
+    post:
+      summary: Signal keys as void to external KMS (i.e. discard keys)
+      operationId: post-ext_keys-void
+      description: |
+        Pass an extended key request container comprising key IDs to another
+        KME, for the key(s) to be marked as void (i.e. discarded and not
+        delivered to SAEs). The Extended Key Container contains keys matching
+        those already passed to the KME.
+
+        As for `ext_keys`, this method is 'non-blocking'. Upon a valid request,
+        a KME shall discard keys relating to the provided key IDs and post a
+        call to the specified `ack_callback_url` describing the completed
+        operation. Any subsequent 'get key with key ID' requests made to the KME
+        (using ETSI 014) for those keys will be rejected.
+
+        A Code 400 error will be returned if the container format is invalid or
+        includes initiator/target SAE IDs for which a valid route is not known
+        to the KME.
+
+        If this is called without supplying a `key_ids` array, then all keys
+        shared between the provided SAEs will be voided (to prevent accidental
+        key loss, to confirm this action an `all_confirmation` boolean field
+        must also be passed as true, otherwise a Code 400 error is returned).
+      parameters:
+        - $ref: '#/components/parameters/all_confirmation'
+      requestBody:
+        description: Void request container
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/void_container'
+      responses:
+        '202':
+          $ref: '#/components/responses/202-extkey'
+        '400':
+          $ref: '#/components/responses/400-extkey-void'
+        '401':
+          $ref: '#/components/responses/401-extkey'
+        '408':
+          $ref: '#/components/responses/408-extkey'
+        '503':
+          $ref: '#/components/responses/503-extkey'
+
+  /kmapi/v1/ext_keys/ack:
+    post:
+      summary: Acknowledge completion of a previous ext_key request
+      operationId: post-ext_keys-ack
+      description: |
+        Pass one or more key acknowledgement container comprising key IDs
+        associated with a previous call to the ext_keys method by an external
+        KMS. The status of all keys in the container is indicated by the status
+        field.
+
+        The `ack_status` field may be `relayed` `voided` `failed` or `key not
+        present`.
+
+        - `relayed` indicates the KME has successfully relayed the specified
+        keys to the requested target (where the initiator_sae_id and
+        target_sae_id are specified in the acknowledgement container). If the
+        initiator requested multiple targets, the acknowledgements for each
+        target are separate acknowledgement containers (since the status for
+        each target may be different).
+
+        - `voided` indicates the KME has successfully voided the specified keys
+        so they will not be delivered to applications.
+
+        - `failed` indicates that the requested operation on the specified keys
+        could not be completed. For example, an ext_keys request may not
+        complete if there is insufficient key material for relaying. Also, a
+        void request will fail if the specified keys have already been delivered
+        to a requesting SAE.
+
+        - `key not present` indicates that the specified keys could not be found
+        by the KME.
+
+        In addition to the `status` field, additional information (e.g.
+        explaining a failure) can be included in the optional `message` field.
+
+        It is possible that a single ext_keys request included multiple keys,
+        where some are successfully delivered and other fail. This can be
+        indicated by a KME sending multiple acknowledgement requests, with the
+        container payload used to specify the status of different arrays of
+        keys. A single container should be used for each target SAE ID.
+
+        Extension fields may also be optionally included (which could be, e.g.
+        metadata for each key to indicate its routing information from the
+        remote KMS). If such extensions are included, the extensions should be
+        handled accordingly (e.g. to keep the provided metadata with each key so
+        it can be relayed to the initiator SAE).
+
+        A Code 200 Success will returned by a KME receiving a valid
+        acknowledgement, otherwise an Error Code will be returned including
+        details of the error.
+      requestBody:
+        description: Acknowledgements containers
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ack_containers'
+      responses:
+        '200':
+          $ref: '#/components/responses/200-ack-response'
+        '400':
+          $ref: '#/components/responses/400-extkey-ack'
+        '401':
+          $ref: '#/components/responses/401-extkey'
+        '503':
+          $ref: '#/components/responses/503-extkey'
+          
+components:
+  responses:
+    200-ack-response:
+      description: Successful response
+
+    202-extkey:
+      description: Request accepted response
+
+    400-extkey:
+      description: Bad request format response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          examples:
+            missing_parameters:
+              value:
+                message: missing parameters
+                details:
+                  - missing_parameters: required parameters are missing from the API call
+            unknown_sae_id:
+              value:
+                message: key routing error
+                details:
+                  - target_sae_id_not_recognized: KME associated with a target SAE ID is not known.
+            no_known_route:
+              value:
+                message: key routing error
+                details:
+                  - no_known_route: KME does not know a route to deliver to target SAE ID.
+            no_passback_allowed:
+              value:
+                message: key routing error
+                details:
+                  - invalid_routing: >-
+                      Routing this key to target SAE ID requires directly
+                      passing it back to the calling KME, which is invalid.
+            insufficient_key_material:
+              value:
+                message: insufficient key material
+                details:
+                  - insufficient_key_material: Insufficient key material available to deliver key.
+
+    400-extkey-void:
+      description: Bad request format response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          examples:
+            failed:
+              value:
+                message: void request not understood
+                details:
+                  - key_voiding_error: KME cannot parse the submitted void request.
+            key_not_present:
+              value:
+                message: key not present
+                details:
+                  - key_not_present: The requested key ID(s) are not available to be voided.
+            no_key_ids_or_confirmation:
+              value:
+                message: no_key_ids_or_confirmation
+                details:
+                  - no_key_ids_or_confirmation: >-
+                      When no key_ids are passed, all keys shared between the
+                      SAEs will be voided. If this is the intended action, the
+                      `all_confirmation` field must also be set to true.
+                      Otherwise, please specify key_ids to be voided.
+
+    400-extkey-ack:
+      description: Bad request format response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          examples:
+            not_understood:
+              value:
+                message: ack not understood
+                details:
+                  - ack_not_understood: KME cannot parse the submitted acknowledgement.
+            key_not_present:
+              value:
+                message: key not present
+                details:
+                  - key_not_present: The acknowledged key ID(s) are not known to this KME.
+
+    401-extkey:
+      description: Unauthorized response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          example:
+            message: unauthorized
+            details:
+              - unauthorized: User-supplied certificate is invalid.
+
+    408-extkey:
+      description: Timeout response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          example:
+            message: timeout
+            details:
+              - timeout: >-
+                  No response received from KME to ext_keys request in
+                  sufficient time.
+
+    503-extkey:
+      description: Error of server side response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/message_data'
+          example:
+            message: server side general error
+            details:
+              - server_side_general_error: The server encountered a general failure and cannot respond.
+
+  schemas:
+    initiator_sae_id:
+      type: string
+      description: >-
+        ID of the SAE that initiated the request to share the key(s) relevant to
+        the request.
+      example: encryptor1
+
+    target_sae_id:
+      type: string
+      description: ID of target SAE that the initiator SAE wishes to share keys with.
+      example: encryptor2
+
+    target_sae_ids:
+      type: array
+      description: >-
+        Array of IDs of target SAEs relevant to the request. (In a call to
+        ext_keys to request keys to be shared these are the keys the initiator
+        SAE wishes to share keys with.) A single target or multiple targets can
+        be specified (where each target gets an identical key). The maximum
+        number of IDs is defined as `max_sae_id_count` in Status data format.
+      items:
+        $ref: '#/components/schemas/target_sae_id'
+
+    key_id:
+      description: 'ID of the key: UUID format.'
+      type: string
+      format: uuid
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+    value:
+      description: |
+        Key data encoded by the base64 data encoding scheme specified in IETF 
+        RFC 4648 (October 2006): "The Base16, Base32, and Base64 Data Encodings" 
+        [7] using the alphabet in Table 1 of the RFC.
+
+        Implementations shall ensure that padding used in the base64 data 
+        encoding scheme is never used as key material. This includes the 
+        zero, two, or one `=` padding characters at the end of the final 
+        encoded unit of output where the final quantum of encoding input 
+        is exactly 24 bits, 8 bits, or 16 bits, respectively.
+        
+        When non-integer-byte-size keys are used it is essential to 
+        strip any padding bits with value zero that were added (on the 
+        right) when decoding. It is not safe to strip all bits with 
+        value zero from the end of the decoded key since this can bias 
+        keys. Decoding needs to make use of independent knowledge of 
+        the requested key size to correctly strip such padding in order to 
+        recover a valid key. (The base64 data encoding scheme and the `=` 
+        padding character rules it includes can only indicate the size of 
+        the encoding input in integer byte sizes. The final character 
+        of the encoded output or the final character before the first 
+        `=` padding character can include information from padding bits 
+        with value zero that were added when during encoding in the case 
+        of non-integer-byte-size keys.)
+        
+        Note that support for non-integer-byte-size keys is optional and 
+        many vendors choose to support only integer byte sizes.
+      type: string
+      example: wHHVxRwDJs3/bXd38GHP3oe4svTuRpZS0yCC7x4Ly+s=
+
+    extension:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties: true
+      description: >-
+        Reserved for future use. Dictionary of objects. Objects may be of any 
+        type and custom extensions should be named starting with a vendor prefix 
+        followed by an underscore.
+      example:
+        abc_extension1: 'Some string'
+        abc_extension2: 
+          property1: 10111
+          property2: 'Some text'
+          property3:
+            subprop1: 21
+            subprop2: true
+
+    extension_mandatory:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties: true
+      description: >-
+        Dictionary of objects representing extension parameters that KME shall handle 
+        or return an error (e.g. as originated in the Get Key request that triggerded 
+        key relaying to use the ext_keys call). Objects may be of any type and custom 
+        extensions should be named starting with a vendor prefix followed by an 
+        underscore.
+      example:
+        abc_route_type: 'direct'
+        abc_method:
+          hybrid_keys: true
+          primary: 'qkd'
+          secondary: 'pqc'
+
+    extension_optional:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties: true
+      description: >-
+        Dictionary of objects representing extension parameters that KME may ignore (e.g. 
+        as originated in the Get Key request that triggered key relaying to use the 
+        ext_keys call). Objects may be of any type and custom extensions should be named 
+        starting with a vendor prefix followed by an underscore.
+      example:
+        abc_module_type:
+          vendor: 'Company ABC'
+          protocol: 'BB84'
+          min_version: 2.5
+        abc_qos_session: 'e73d9abe'
+
+    ack_callback_url:
+      description: >-
+        URL to which acknowledgement(s) should be sent after all or part of the
+        request completes or fails.
+      type: string
+      example: https://kme1/kmapi/v1/ext_keys/ack
+      
+    ack_status:
+      description: Status of acknowledged keys
+      type: string
+      enum:
+        - relayed
+        - voided
+        - failed
+        - key not present
+      example: relayed
+
+    keys:
+      type: array
+      description: Array of keys.
+      items:
+        type: object
+        required:
+          - key_id
+          - value
+        properties:
+          key_id:
+            $ref: '#/components/schemas/key_id'
+          value:
+            $ref: '#/components/schemas/value'
+          extension:
+            $ref: '#/components/schemas/extension'
+
+    ext_key_container:
+      title: Extended key request container
+      type: object
+      required:
+        - keys
+        - initiator_sae_id
+        - target_sae_ids
+        - ack_callback_url
+      properties:
+        keys:
+          $ref: '#/components/schemas/keys'
+        initiator_sae_id:
+          $ref: '#/components/schemas/initiator_sae_id'
+        target_sae_ids:
+          $ref: '#/components/schemas/target_sae_ids'
+        ack_callback_url:
+          $ref: '#/components/schemas/ack_callback_url'
+        extension_mandatory:
+          $ref: '#/components/schemas/extension_mandatory'
+        extension_optional:
+          $ref: '#/components/schemas/extension_optional'
+
+    key_id_container:
+      type: array
+      description: Array of key IDs.
+      items:
+        type: object
+        required:
+          - key_id
+        properties:
+          key_id:
+            $ref: '#/components/schemas/key_id'
+          extension:
+            $ref: '#/components/schemas/extension'
+
+    key_ids:
+      type: array
+      description: Array of key IDs.
+      items:
+        $ref: '#/components/schemas/key_id'
+
+    void_container:
+      title: Void request container
+      type: object
+      required:
+        - key_ids
+        - initiator_sae_id
+        - target_sae_ids
+        - ack_callback_url
+      properties:
+        key_ids:
+          $ref: '#/components/schemas/key_ids'
+        initiator_sae_id:
+          $ref: '#/components/schemas/initiator_sae_id'
+        target_sae_ids:
+          $ref: '#/components/schemas/target_sae_ids'
+        ack_callback_url:
+          $ref: '#/components/schemas/ack_callback_url'
+        extension:
+          $ref: '#/components/schemas/extension'
+
+    ack_container:
+      title: Acknowledgements container
+      type: object
+      required:
+        - key_ids
+        - ack_status
+        - initiator_sae_id
+        - target_sae_id
+      properties:
+        key_ids:
+          $ref: '#/components/schemas/key_id_container'
+        ack_status:
+          $ref: '#/components/schemas/ack_status'
+        initiator_sae_id:
+          $ref: '#/components/schemas/initiator_sae_id'
+        target_sae_id:
+          $ref: '#/components/schemas/target_sae_id'
+        message:
+          $ref: '#/components/schemas/ack_message'
+        extension:
+          $ref: '#/components/schemas/extension'
+
+    ack_containers:
+      description: Array of acknowledgement containers
+      type: array
+      items:
+        $ref: '#/components/schemas/ack_container'
+
+    version:
+      type: string
+      description: Supported API version.
+      example: v1
+
+    versions:
+      type: array
+      description: Array of supported API versions.
+      items:
+        $ref: '#/components/schemas/version'
+
+    version_container:
+      title: Version container
+      type: object
+      required:
+        - versions
+      properties:
+        versions:
+          $ref: '#/components/schemas/versions'
+        extension:
+          $ref: '#/components/schemas/extension'
+
+    ack_message:
+      title: message
+      description: Optional further details to expand upon the `ack_status`.
+      type: string
+
+    message_data:
+      title: Message data format
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          description: Response message
+          type: string
+          example: success
+        details:
+          description: Array of objects containing details
+          type: array
+          items:
+            type: object
+
+  parameters:
+    all_confirmation:
+      name: all_confirmation
+      in: query
+      required: false
+      description: >-
+        Confirmation flag used to confirm deletion of all keys when no key IDs
+        are specified.
+      schema:
+        type: boolean
+      examples:
+        'true':
+          value: true
+          summary: Confirmation
+          
+  securitySchemes:
+    mutualTLS:
+      type: http
+      scheme: mutual
+      description: >-
+        Mutual TLS authentication using certificates, TLSv1.3 (or later). 
+        NOTE - OpenAPI 3.1.0 introduces better support for describing mTLS.
+security:
+  - mutualTLS: []
